@@ -1,9 +1,9 @@
 local manifest = {
   id = 'chat-jump-send',
   name = 'Jump and Send',
-  version = '2.9',
+  version = '3.1',
   author = 'Atlas',
-  description = 'One jump key for browsing and chat. In Chrome, SandFly plus J jumps past the toolbar into the web page content. In Muse, Gemini, ChatGPT, Google Messages and Facebook Messenger, SandFly plus J jumps between the message box and the most recent message, and SandFly plus Enter sends. On the Messenger home screen, J jumps straight to your most recent chat. Google Messages on a tablet (paired web view) gets a three-stop cycle. In YouTube, J jumps past the toolbar and filter chips straight to the first video. Send does nothing in Chrome or YouTube.',
+  description = 'One jump key for browsing and chat. In Chrome, SandFly plus J jumps past the toolbar into the web page content. In Muse, Gemini, ChatGPT, Google Messages and Facebook Messenger, SandFly plus J jumps between the message box and the most recent message, and SandFly plus Enter sends. On the Messenger home screen, J jumps straight to your most recent chat. Google Messages on a tablet (paired web view) gets a three-stop cycle. In YouTube, J jumps past the toolbar and filter chips straight to the first video. Send does nothing in Chrome or YouTube. In Telegram, SandFly plus J jumps between the message box and the most recent message (or into the topics or chat list), plain Up and Down step within the list you are in and nowhere else, and SandFly plus Enter sends.',
   minApiVersion = 2,
   testedApiVersion = 3,
   apps = {
@@ -15,11 +15,14 @@ local manifest = {
     'com.google.android.apps.messaging',
     'com.facebook.orca',
     'com.google.android.youtube',
+    'org.telegram.messenger',
   },
   permissions = { 'screen', 'actions', 'input', 'speech' },
   commands = {
     { id = 'jump', title = 'Jump', keys = 'sf+j' },
     { id = 'send', title = 'Send message', keys = { 'sf+enter', 'ctrl+enter' } },
+    { id = 'tgNext', title = 'Next item (Telegram)', keys = 'sf+n' },
+    { id = 'tgPrev', title = 'Previous item (Telegram)', keys = 'sf+p' },
   },
 }
 
@@ -256,6 +259,21 @@ local function dittoJump()
     listRow = list:find({ clickable = true, focusable = true })
   end
   local foc = sf.screen.focused()
+
+  -- No conversation selected (screen tree, November 11, 2026): there is
+  -- no message box and no message pane on this screen, only the
+  -- conversation list. J plops you straight into the list, on the first
+  -- conversation, instead of hunting for a message that is not there.
+  if edit == nil then
+    if listRow ~= nil then
+      listRow:focus()
+    elseif list ~= nil then
+      list:focus()
+    else
+      sf.speak('No conversation list found')
+    end
+    return
+  end
 
   if edit ~= nil and foc ~= nil and isInside(foc, edit) then
     if listRow ~= nil then
@@ -688,6 +706,239 @@ local function youtubeJump()
   sf.speak('No video found')
 end
 
+-- ---------- Telegram (org.telegram.messenger) ----------
+-- Screen trees, November 11, 2026: Telegram stacks several screens in one
+-- window (chat lists under topics under the open conversation), so a list
+-- is told by its rows, never by position: chat rows carry the "Chat
+-- Preview" action, message rows carry "Message options", and topic rows'
+-- descriptions start with "Topic.". With text typed, the input row's send
+-- node is a View described exactly "Send"; with an empty box the same spot
+-- is "Record voice message" instead, and there is no Send node at all.
+-- Plain Up and Down are bound to the step commands only while Telegram is
+-- in front (see the app enter/leave hooks at the bottom), so the arrows
+-- step inside the current list and can never wander out of it; everywhere
+-- else SandFly keeps the arrows. SandFly plus N and P step too.
+
+local function tgHasAction(item, label)
+  local acts = item.actions
+  if acts == nil then
+    return false
+  end
+  for _, a in ipairs(acts) do
+    if type(a) == 'table' then
+      if a.label == label then
+        return true
+      end
+    elseif a == label then
+      return true
+    end
+  end
+  return false
+end
+
+local function tgKindOf(list)
+  local kids = list:children() or {}
+  for _, k in ipairs(kids) do
+    if tgHasAction(k, 'Message options') then
+      return 'messages', kids
+    end
+  end
+  for _, k in ipairs(kids) do
+    local d = k.contentDescription or ''
+    if d:sub(1, 6) == 'Topic.' then
+      return 'topics', kids
+    end
+  end
+  for _, k in ipairs(kids) do
+    if tgHasAction(k, 'Chat Preview') then
+      return 'chats', kids
+    end
+  end
+  return nil, kids
+end
+
+local function tgItems(kind, kids)
+  local items = {}
+  for _, k in ipairs(kids) do
+    if kind == 'messages' then
+      if tgHasAction(k, 'Message options') then
+        items[#items + 1] = k
+      end
+    elseif kind == 'topics' then
+      local d = k.contentDescription or ''
+      if d:sub(1, 6) == 'Topic.' then
+        items[#items + 1] = k
+      end
+    elseif kind == 'chats' then
+      if tgHasAction(k, 'Chat Preview') then
+        items[#items + 1] = k
+      end
+    elseif k.focusable then
+      items[#items + 1] = k
+    end
+  end
+  return items
+end
+
+local function tgPick(kind, foc)
+  local lists = sf.screen.findAll({ className = 'RecyclerView' }, 20) or {}
+  local last = nil
+  for _, l in ipairs(lists) do
+    local k, kids = tgKindOf(l)
+    if k == kind then
+      if foc ~= nil and isInside(foc, l) then
+        return { list = l, kind = k, kids = kids }
+      end
+      last = { list = l, kind = k, kids = kids }
+    end
+  end
+  return last
+end
+
+local function tgEntryForFocus(foc)
+  if foc == nil then
+    return nil
+  end
+  local lists = sf.screen.findAll({ className = 'RecyclerView' }, 20) or {}
+  for _, l in ipairs(lists) do
+    if isInside(foc, l) then
+      local k, kids = tgKindOf(l)
+      return { list = l, kind = k, kids = kids }
+    end
+  end
+  return nil
+end
+
+local function tgDefaultItem(entry)
+  local items = tgItems(entry.kind, entry.kids)
+  if #items == 0 then
+    return nil
+  end
+  if entry.kind == 'messages' then
+    return items[#items]
+  end
+  return items[1]
+end
+
+local function tgJump()
+  local edit = findEditField()
+  local foc = sf.screen.focused()
+  if edit ~= nil then
+    if foc ~= nil and isInside(foc, edit) then
+      local entry = tgPick('messages', foc)
+      local item = nil
+      if entry ~= nil then
+        item = tgDefaultItem(entry)
+      end
+      if item ~= nil then
+        item:focus()
+      else
+        sf.speak('No messages found')
+      end
+    else
+      focusEdit(edit)
+    end
+    return
+  end
+  local entry = tgEntryForFocus(foc)
+  if entry == nil then
+    entry = tgPick('topics', foc)
+  end
+  if entry == nil then
+    entry = tgPick('chats', foc)
+  end
+  if entry ~= nil then
+    local item = tgDefaultItem(entry)
+    if item ~= nil then
+      item:focus()
+      return
+    end
+  end
+  sf.speak('No list found')
+end
+
+local function tgStep(dir)
+  local foc = sf.screen.focused()
+  if foc == nil then
+    tgJump()
+    return
+  end
+  local node = foc
+  local list = nil
+  for _ = 1, 10 do
+    if node == nil then
+      break
+    end
+    if classContains(node, 'RecyclerView') then
+      list = node
+      break
+    end
+    node = node:parent()
+  end
+  if list == nil then
+    tgJump()
+    return
+  end
+  local kind, kids = tgKindOf(list)
+  local items = tgItems(kind, kids)
+  if #items == 0 then
+    tgJump()
+    return
+  end
+  local idx = nil
+  for i, it in ipairs(items) do
+    if foc == it or isInside(foc, it) then
+      idx = i
+      break
+    end
+  end
+  if idx == nil then
+    if kind == 'messages' then
+      items[#items]:focus()
+    else
+      items[1]:focus()
+    end
+    return
+  end
+  local word = 'item'
+  if kind == 'messages' then
+    word = 'message'
+  elseif kind == 'topics' then
+    word = 'topic'
+  elseif kind == 'chats' then
+    word = 'chat'
+  end
+  local nxt = idx + dir
+  if nxt < 1 then
+    sf.speak('First ' .. word)
+    return
+  end
+  if nxt > #items then
+    sf.speak('Last ' .. word)
+    return
+  end
+  items[nxt]:focus()
+end
+
+local function tgSend()
+  local edit = findEditField()
+  if edit == nil then
+    sf.speak('Not in a chat')
+    return
+  end
+  local t = edit.text or ''
+  if t == '' then
+    sf.speak('Nothing to send')
+    return
+  end
+  local btn = sf.screen.find({ contentDescription = 'Send' })
+  if btn ~= nil then
+    btn:click()
+  else
+    sf.speak('No send button found')
+  end
+end
+
 -- ---------- commands ----------
 
 sf.onCommand('jump', function(event)
@@ -705,6 +956,11 @@ sf.onCommand('jump', function(event)
 
   if isGemini(pkg) then
     geminiJump()
+    return
+  end
+
+  if pkg == 'org.telegram.messenger' then
+    tgJump()
     return
   end
 
@@ -779,6 +1035,11 @@ sf.onCommand('send', function(event)
     return
   end
 
+  if pkg == 'org.telegram.messenger' then
+    tgSend()
+    return
+  end
+
   if isDitto(pkg, activity) then
     dittoSend()
     return
@@ -813,5 +1074,43 @@ sf.onCommand('send', function(event)
     edit:perform('imeEnter')
   else
     sf.speak('No send button found')
+  end
+end)
+
+sf.onCommand('tgNext', function(event)
+  local pkg = currentApp()
+  if pkg ~= 'org.telegram.messenger' then
+    return
+  end
+  tgStep(1)
+end)
+
+sf.onCommand('tgPrev', function(event)
+  local pkg = currentApp()
+  if pkg ~= 'org.telegram.messenger' then
+    return
+  end
+  tgStep(-1)
+end)
+
+-- Plain Up and Down belong to SandFly everywhere else. Bind them to the
+-- Telegram step commands only while Telegram is in front and unbind them
+-- on the way out, so no other app ever has its arrows taken.
+local tgArrowsBound = false
+
+sf.onAppEnter(function(event)
+  if event ~= nil and event.package == 'org.telegram.messenger'
+    and not tgArrowsBound then
+    sf.bind('tgNext', { keys = 'down' })
+    sf.bind('tgPrev', { keys = 'up' })
+    tgArrowsBound = true
+  end
+end)
+
+sf.onAppLeave(function(event)
+  if tgArrowsBound then
+    sf.unbind('tgNext', { keys = 'down' })
+    sf.unbind('tgPrev', { keys = 'up' })
+    tgArrowsBound = false
   end
 end)
