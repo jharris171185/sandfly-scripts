@@ -1,7 +1,7 @@
 local manifest = {
   id = 'chat-jump-send',
   name = 'Jump and Send',
-  version = '3.1',
+  version = '3.2',
   author = 'Atlas',
   description = 'One jump key for browsing and chat. In Chrome, SandFly plus J jumps past the toolbar into the web page content. In Muse, Gemini, ChatGPT, Google Messages and Facebook Messenger, SandFly plus J jumps between the message box and the most recent message, and SandFly plus Enter sends. On the Messenger home screen, J jumps straight to your most recent chat. Google Messages on a tablet (paired web view) gets a three-stop cycle. In YouTube, J jumps past the toolbar and filter chips straight to the first video. Send does nothing in Chrome or YouTube. In Telegram, SandFly plus J jumps between the message box and the most recent message (or into the topics or chat list), plain Up and Down step within the list you are in and nowhere else, and SandFly plus Enter sends.',
   minApiVersion = 2,
@@ -718,6 +718,11 @@ end
 -- in front (see the app enter/leave hooks at the bottom), so the arrows
 -- step inside the current list and can never wander out of it; everywhere
 -- else SandFly keeps the arrows. SandFly plus N and P step too.
+-- Chat list screen (tree, November 12, 2026): the chat list and a
+-- stories strip are two separate RecyclerViews, told apart by rows as
+-- always, and the screen carries its own Search Chats edit field. That
+-- field is NOT the message box: the box is identified strictly, by a
+-- hint or description of exactly "Message" (see tgMessageBox).
 
 local function tgHasAction(item, label)
   local acts = item.actions
@@ -734,6 +739,23 @@ local function tgHasAction(item, label)
     end
   end
   return false
+end
+
+-- The message box, strictly: an edit field whose hint or description
+-- is exactly "Message" (typed tree, November 11, 2026). Nothing else
+-- counts. v3.1 used the shared any-edit-field finder here, so on the
+-- chat list screen the Search Chats field impersonated the box: J
+-- landed on Search, stepping fell back to J and landed there again,
+-- and a typed search query counted as a draft to send (field report,
+-- November 12, 2026).
+local function tgMessageBox()
+  local edits = sf.screen.findAll({ editable = true }, 20)
+  for _, e in ipairs(edits) do
+    if e.hint == 'Message' or e.contentDescription == 'Message' then
+      return e
+    end
+  end
+  return nil
 end
 
 local function tgKindOf(list)
@@ -821,7 +843,7 @@ local function tgDefaultItem(entry)
 end
 
 local function tgJump()
-  local edit = findEditField()
+  local edit = tgMessageBox()
   local foc = sf.screen.focused()
   if edit ~= nil then
     if foc ~= nil and isInside(foc, edit) then
@@ -851,8 +873,10 @@ local function tgJump()
     local item = tgDefaultItem(entry)
     if item ~= nil then
       item:focus()
-      return
+    else
+      entry.list:focus()
     end
+    return
   end
   sf.speak('No list found')
 end
@@ -921,7 +945,7 @@ local function tgStep(dir)
 end
 
 local function tgSend()
-  local edit = findEditField()
+  local edit = tgMessageBox()
   if edit == nil then
     sf.speak('Not in a chat')
     return
