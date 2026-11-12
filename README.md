@@ -20,7 +20,7 @@ Justin says:
 | [Phone Actions and Switch](phone-actions-switch/) | Google Phone & Contacts | Final, in daily use |
 | [Thunderbird Keys and Actions](thunderbird-keys-actions/) | Thunderbird | Final, verified |
 | [Play Protect Install](play-protect-install/) | Play Protect prompt | Final, verified |
-| [Jump and Send](jump-and-send/) | Chrome, Messages, Messenger, chat apps, YouTube | In daily use — coverage varies by app, see its README |
+| [Jump and Send](jump-and-send/) | Chrome, Messages, Messenger, chat apps, YouTube, Telegram | In daily use — coverage varies by app, see its README |
 | [WaveSmith Swipes](wavesmith-swipes/) | WaveSmith | Untested |
 
 Design, keys, and testing by Justin Harris; code written with Atlas (Muse). No warranty — they are shared because they might help, exactly as they are.
