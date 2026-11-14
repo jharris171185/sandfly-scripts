@@ -52,6 +52,14 @@
 -- still listed on this script's page in SandFly settings, where
 -- their bindings can be changed or turned off.
 --
+-- 1.4 (Nov 14, 2026): fixed arrow navigation sticking at the
+-- bottom of the message list. Two messages from the same sender
+-- in the same minute used to share one row identity, so Down
+-- kept "moving" to the row already focused and never scrolled.
+-- Row identity now includes the preview's opening, the current
+-- row is matched by node first, and the scroll-for-more step
+-- retries before declaring the end of the list.
+--
 -- HOW THE LIST ACTIONS WORK: Reply / Reply all / Forward open the
 -- message and tap the real buttons. Delete / Mark / Star select
 -- the row (if needed) and tap the real button on the selection
@@ -61,7 +69,7 @@
 local manifest = {
   id = 'thunderbird-keys-actions',
   name = 'Thunderbird Keys and Actions',
-  version = '1.3',
+  version = '1.4',
   author = 'Atlas',
   description = 'Desktop-style keyboard shortcuts for Thunderbird Android (Ctrl+N, Ctrl+R, Ctrl+Shift+R, Ctrl+L, Delete, Space to select, SandFly+J headers/body, SandFly+Enter to send) plus iOS-style list actions: swipe right/left moves message to message skipping the Select stop, swipe down/up cycles actions, double-tap runs one; in selection mode double-tap toggles selection.',
   minApiVersion = 2,
@@ -162,12 +170,22 @@ local function listRows()
   return rows, list
 end
 
+-- A row's identity. Sender + date alone is NOT unique: two messages
+-- from the same sender in the same minute share both (birthday
+-- reminders are the classic case). With a shared key, Down found
+-- the first twin's index, "moved" to the row already focused, and
+-- the list read as stuck at the bottom (v1.3 bug, fixed in 1.4).
+-- The preview's opening is part of the key now -- near-identical
+-- messages differ there.
 local function rowKey(row)
   local subj = row:find({ id = ID .. 'subject' })
   local date = row:find({ id = ID .. 'date' })
+  local prev = row:find({ id = ID .. 'preview' })
   local who = subj and (subj.contentDescription or subj.text or '') or ''
   local when = date and (date.text or '') or ''
-  return who .. '|' .. when
+  local what = prev and (prev.text or '') or ''
+  if #what > 120 then what = what:sub(1, 120) end
+  return who .. '|' .. when .. '|' .. what
 end
 
 local function rowUnread(row)
@@ -242,12 +260,17 @@ end
 
 local function scrollForMore(list, rows, forward)
   local before = rowKeys(rows)
-  if forward then list:scrollForward() else list:scrollBackward() end
-  sf.sleep(350)
-  local now = listRows()
-  if not now then return nil end
-  for _, r in ipairs(now) do
-    if not before[rowKey(r)] then return now end
+  -- One scroll usually surfaces new rows, but a very tall row can
+  -- eat a whole scroll step; retry a few times before believing
+  -- the list really ends here.
+  for _ = 1, 3 do
+    if forward then list:scrollForward() else list:scrollBackward() end
+    sf.sleep(350)
+    local now = listRows()
+    if not now then return nil end
+    for _, r in ipairs(now) do
+      if not before[rowKey(r)] then return now end
+    end
   end
   return nil
 end
@@ -259,7 +282,12 @@ local function moveItem(dir)
   if not cur then return false end
   local idx = nil
   for i, r in ipairs(rows) do
-    if rowKey(r) == rowKey(cur) then idx = i break end
+    if r == cur then idx = i break end
+  end
+  if not idx then
+    for i, r in ipairs(rows) do
+      if rowKey(r) == rowKey(cur) then idx = i break end
+    end
   end
   if not idx then return false end
   local target = rows[idx + dir]
